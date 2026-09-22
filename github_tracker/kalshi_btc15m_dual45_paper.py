@@ -1,3 +1,4 @@
+# Railway deployment refresh
 """Paper strategy: place $50 YES and $50 NO limits at 45 cents, hold to settlement.
 
 Run in VS Code: python kalshi_btc15m_dual45_paper.py
