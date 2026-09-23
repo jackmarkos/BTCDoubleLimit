@@ -11,6 +11,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_EVEN
 from pathlib import Path
 
 
@@ -23,6 +24,7 @@ SERIES = 'KXBTC15M'
 
 LIMIT_CENTS = 45
 BUDGET_PER_SIDE_DOLLARS = 50
+MAX_FILL_COST_CENTS = 5000
 
 CONTRACTS_PER_SIDE = int(
     BUDGET_PER_SIDE_DOLLARS * 100 // LIMIT_CENTS
@@ -66,19 +68,34 @@ def get(path, params=None):
 
 
 def ask_cents(market):
-    yes_ask = round(
-        float(market['yes_ask_dollars']) * 100,
-        2
-    )
+    # Keep the quote exact until sizing; never round a price down first.
+    return {
+        'YES': Decimal(str(market['yes_ask_dollars'])) * 100,
+        'NO': Decimal(str(market['no_ask_dollars'])) * 100
+    }
 
-    no_ask = round(
-        float(market['no_ask_dollars']) * 100,
-        2
-    )
+
+def make_fill(ask, fill_type):
+    """Build a paper fill with an exact $50 ceiling, before cost rounding."""
+    price = Decimal(str(ask))
+    if not price.is_finite() or not 0 < price <= 100:
+        raise ValueError(f'Invalid paper ask: {ask}')
+
+    # Integer division avoids floating-point and decimal division rounding.
+    numerator, denominator = price.as_integer_ratio()
+    contracts = MAX_FILL_COST_CENTS * denominator // numerator
+    cost_cents = contracts * price
+    if contracts <= 0 or cost_cents > MAX_FILL_COST_CENTS:
+        raise ValueError('Paper fill would exceed the $50 maximum')
 
     return {
-        'YES': yes_ask,
-        'NO': no_ask
+        'price_cents': float(price),
+        'time': clock(),
+        'fill_type': fill_type,
+        'contracts': contracts,
+        'cost_dollars': float(
+            (cost_cents / 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_EVEN)
+        )
     }
 
 
@@ -252,8 +269,8 @@ def print_new_market(ticker):
 
     print(
         f'{clock()} | PAPER LIMITS PLACED | '
-        f'YES: {CONTRACTS_PER_SIDE} @ {LIMIT_CENTS}c | '
-        f'NO: {CONTRACTS_PER_SIDE} @ {LIMIT_CENTS}c',
+        f'YES: up to $50 @ <= {LIMIT_CENTS}c | '
+        f'NO: up to $50 @ <= {LIMIT_CENTS}c | SIZE AT FILL PRICE',
         flush=True
     )
 
@@ -349,9 +366,11 @@ def summarize_close(ticker, record, state):
 
         return
 
-    # If both sides filled, the P&L is already mathematically
-    # locked in because one side must settle at $1.
-    if len(fills) == 2:
+    # Only equal-sized sides lock in P&L before the outcome is known.
+    if (
+        len(fills) == 2
+        and fills['YES']['contracts'] == fills['NO']['contracts']
+    ):
         spent = round(
             sum(
                 fill['cost_dollars']
@@ -361,7 +380,7 @@ def summarize_close(ticker, record, state):
         )
 
         record['final_pnl_dollars'] = round(
-            CONTRACTS_PER_SIDE - spent,
+            fills['YES']['contracts'] - spent,
             2
         )
 
@@ -536,10 +555,13 @@ def main():
             {}
         )
 
-        if len(fills) == 2:
+        if (
+            len(fills) == 2
+            and fills['YES']['contracts'] == fills['NO']['contracts']
+        ):
 
             record['final_pnl_dollars'] = round(
-                CONTRACTS_PER_SIDE
+                fills['YES']['contracts']
                 - sum(
                     fill['cost_dollars']
                     for fill in fills.values()
@@ -579,9 +601,9 @@ def main():
 
     print(
         f'STRATEGY: '
-        f'{CONTRACTS_PER_SIDE} YES @ {LIMIT_CENTS}c '
+        f'YES up to $50 @ <= {LIMIT_CENTS}c '
         f'and '
-        f'{CONTRACTS_PER_SIDE} NO @ {LIMIT_CENTS}c | '
+        f'NO up to $50 @ <= {LIMIT_CENTS}c | '
         f'10-MIN HEDGE IF EXACTLY ONE SIDE IS FILLED',
         flush=True
     )
@@ -710,18 +732,7 @@ def main():
                         and 0 < ask <= LIMIT_CENTS
                     ):
 
-                        fill = {
-                            'price_cents': ask,
-                            'time': clock(),
-                            'fill_type': 'LIMIT',
-                            'contracts': CONTRACTS_PER_SIDE,
-                            'cost_dollars': round(
-                                CONTRACTS_PER_SIDE
-                                * ask
-                                / 100,
-                                2
-                            )
-                        }
+                        fill = make_fill(ask, 'LIMIT')
 
                         record['fills'][side] = fill
 
@@ -762,16 +773,7 @@ def main():
                             missing_side not in record['fills']
                             and hedge_ask > 0
                         ):
-                            hedge_fill = {
-                                'price_cents': hedge_ask,
-                                'time': clock(),
-                                'fill_type': '10MIN_HEDGE',
-                                'contracts': CONTRACTS_PER_SIDE,
-                                'cost_dollars': round(
-                                    CONTRACTS_PER_SIDE * hedge_ask / 100,
-                                    2
-                                )
-                            }
+                            hedge_fill = make_fill(hedge_ask, '10MIN_HEDGE')
 
                             record['fills'][missing_side] = hedge_fill
                             write_state(state)
