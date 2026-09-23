@@ -26,9 +26,7 @@ LIMIT_CENTS = 45
 BUDGET_PER_SIDE_DOLLARS = 50
 MAX_FILL_COST_CENTS = 5000
 
-CONTRACTS_PER_SIDE = int(
-    BUDGET_PER_SIDE_DOLLARS * 100 // LIMIT_CENTS
-)
+CONTRACTS_PER_SIDE = 111
 
 POLL_SECONDS = 2
 
@@ -83,7 +81,14 @@ def make_fill(ask, fill_type):
 
     # Integer division avoids floating-point and decimal division rounding.
     numerator, denominator = price.as_integer_ratio()
-    contracts = MAX_FILL_COST_CENTS * denominator // numerator
+    if fill_type == 'LIMIT':
+        if price > LIMIT_CENTS:
+            raise ValueError('Paper limit fill exceeds the limit price')
+        contracts = CONTRACTS_PER_SIDE
+    elif fill_type == '10MIN_HEDGE':
+        contracts = MAX_FILL_COST_CENTS * denominator // numerator
+    else:
+        raise ValueError(f'Unknown fill type: {fill_type}')
     cost_cents = contracts * price
     if contracts <= 0 or cost_cents > MAX_FILL_COST_CENTS:
         raise ValueError('Paper fill would exceed the $50 maximum')
@@ -269,8 +274,8 @@ def print_new_market(ticker):
 
     print(
         f'{clock()} | PAPER LIMITS PLACED | '
-        f'YES: up to $50 @ <= {LIMIT_CENTS}c | '
-        f'NO: up to $50 @ <= {LIMIT_CENTS}c | SIZE AT FILL PRICE',
+        f'YES: {CONTRACTS_PER_SIDE} @ {LIMIT_CENTS}c | '
+        f'NO: {CONTRACTS_PER_SIDE} @ {LIMIT_CENTS}c',
         flush=True
     )
 
@@ -601,10 +606,10 @@ def main():
 
     print(
         f'STRATEGY: '
-        f'YES up to $50 @ <= {LIMIT_CENTS}c '
+        f'{CONTRACTS_PER_SIDE} YES @ {LIMIT_CENTS}c '
         f'and '
-        f'NO up to $50 @ <= {LIMIT_CENTS}c | '
-        f'10-MIN HEDGE IF EXACTLY ONE SIDE IS FILLED',
+        f'{CONTRACTS_PER_SIDE} NO @ {LIMIT_CENTS}c | '
+        f'10-MIN HEDGE IF EXACTLY ONE SIDE IS FILLED | MAX HEDGE COST $50',
         flush=True
     )
 
